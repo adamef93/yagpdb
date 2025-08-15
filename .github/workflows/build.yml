@@ -1,0 +1,38 @@
+name: Build and push soundboard
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch: 
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout the code
+      uses: actions/checkout@v3
+    
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: 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
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        platforms: linux/amd64
+        push: true
+        file: ./yagpdb_docker/Dockerfile
+        tags: |
+          ghcr.io/adamef93/yagpdb:latest
+          ghcr.io/adamef93/yagpdb:${{ github.sha }}
+
+    - name: Log out of GitHub Container Registry
+      run: docker logout ghcr.io
