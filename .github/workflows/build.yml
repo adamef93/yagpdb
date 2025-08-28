@@ -31,8 +31,8 @@ jobs:
         push: true
         file: ./yagpdb_docker/Dockerfile
         tags: |
-          ghcr.io/adamef93/soundboard:latest
-          ghcr.io/adamef93/soundboard:${{ github.sha }}
+          ghcr.io/adamef93/yagpdb:latest
+          ghcr.io/adamef93/yagpdb:${{ github.sha }}
 
     - name: Log out of GitHub Container Registry
       run: docker logout ghcr.io
