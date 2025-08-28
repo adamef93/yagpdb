@@ -36,4 +36,3 @@ jobs:
 
     - name: Log out of GitHub Container Registry
       run: docker logout ghcr.io
-file: ./yagpdb_docker/Dockerfile
