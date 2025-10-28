@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/botlabs-gg/yagpdb/v2/analytics"
 	"github.com/botlabs-gg/yagpdb/v2/antiphishing"
+	"github.com/botlabs-gg/yagpdb/v2/bulkrole"
 	"github.com/botlabs-gg/yagpdb/v2/common/featureflags"
 	"github.com/botlabs-gg/yagpdb/v2/common/prom"
 	"github.com/botlabs-gg/yagpdb/v2/common/run"
@@ -28,6 +29,7 @@ import (
 	"github.com/botlabs-gg/yagpdb/v2/logs"
 	"github.com/botlabs-gg/yagpdb/v2/moderation"
 	"github.com/botlabs-gg/yagpdb/v2/notifications"
+	"github.com/botlabs-gg/yagpdb/v2/personalizer"
 	"github.com/botlabs-gg/yagpdb/v2/premium"
 	"github.com/botlabs-gg/yagpdb/v2/premium/discordpremiumsource"
 	"github.com/botlabs-gg/yagpdb/v2/premium/patreonpremiumsource"
@@ -96,6 +98,8 @@ func main() {
 	featureflags.RegisterPlugin()
 	trivia.RegisterPlugin()
 	rss.RegisterPlugin()
+	bulkrole.RegisterPlugin()
+	personalizer.RegisterPlugin()
 
 	// Register confusables replacer
 	confusables.Init()

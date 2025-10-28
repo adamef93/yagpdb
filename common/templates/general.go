@@ -482,6 +482,11 @@ func CreateMessageSend(values ...interface{}) (*discordgo.MessageSend, error) {
 				continue
 			}
 			msg.Flags |= discordgo.MessageFlagsSuppressEmbeds
+		case "is_components_v2":
+			if val == nil || val == false {
+				continue
+			}
+			msg.Flags |= discordgo.MessageFlagsIsComponentsV2
 		default:
 			return nil, errors.New(`invalid key "` + key + `" passed to send message builder.`)
 		}
@@ -643,6 +648,11 @@ func CreateMessageEdit(values ...interface{}) (*discordgo.MessageEdit, error) {
 				continue
 			}
 			msg.Flags |= discordgo.MessageFlagsSuppressEmbeds
+		case "is_components_v2":
+			if val == nil || val == false {
+				continue
+			}
+			msg.Flags |= discordgo.MessageFlagsIsComponentsV2
 		default:
 			return nil, errors.New(`invalid key "` + key + `" passed to message edit builder`)
 		}
@@ -1124,8 +1134,12 @@ func tmplLog(arguments ...interface{}) (float64, error) {
 	return logarithm, nil
 }
 
-func tmplBitwiseAnd(arg1, arg2 interface{}) int {
-	return tmplToInt(arg1) & tmplToInt(arg2)
+func tmplBitwiseAnd(arg0 interface{}, args ...interface{}) int {
+	res := tmplToInt(arg0)
+	for _, arg := range args {
+		res &= tmplToInt(arg)
+	}
+	return res
 }
 
 func tmplBitwiseOr(args ...interface{}) (res int) {
