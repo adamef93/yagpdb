@@ -23,6 +23,7 @@ import (
 
 var (
 	ErrTooManyCalls    = errors.New("too many calls to this function")
+	ErrFuncOnCooldown  = errors.New("function is on cooldown")
 	ErrTooManyAPICalls = errors.New("too many potential Discord API calls")
 	ErrRegexCacheLimit = errors.New("too many unique regular expressions (regex)")
 )
@@ -327,17 +328,17 @@ func (c *Context) checkSafeDictNoRecursion(d Dict, n int) bool {
 	return true
 }
 
-func (c *Context) tmplSendMessage(filterSpecialMentions bool, returnID bool) func(channel interface{}, msg interface{}) interface{} {
+func (c *Context) tmplSendMessage(filterSpecialMentions bool, returnID bool) func(channel any, msg any) (any, error) {
 
-	return func(channel interface{}, msg interface{}) interface{} {
+	return func(channel any, msg any) (any, error) {
 		if c.IncreaseCheckGenericAPICall() {
-			return ""
+			return "", nil
 		}
 
 		sendType := sendMessageGuildChannel
 		cid := c.ChannelArg(channel)
 		if cid == 0 {
-			return ""
+			return "", nil
 		}
 
 		if cid != c.ChannelArgNoDM(channel) {
@@ -363,10 +364,9 @@ func (c *Context) tmplSendMessage(filterSpecialMentions bool, returnID bool) fun
 				msgSend.Reference.ChannelID = cid
 			}
 		case *ComponentBuilder:
-			msgSend, _ = typedMsg.ToComplexMessage()
-			if msgSend.Reference != nil {
-				msgSend.Reference.GuildID = c.GS.ID
-				msgSend.Reference.ChannelID = cid
+			msgSend, err = typedMsg.ToComplexMessage()
+			if err != nil {
+				return "", err
 			}
 		default:
 			msgSend.Content = ToString(msg)
@@ -389,7 +389,11 @@ func (c *Context) tmplSendMessage(filterSpecialMentions bool, returnID bool) fun
 			msgSend.AllowedMentions = discordgo.AllowedMentions{Parse: parseMentions, RepliedUser: repliedUser}
 		}
 
-		if msgSend.Reference != nil {
+		if msgSend.Reference != nil && msgSend.Reference.MessageID != 0 {
+			msgSend.Reference.GuildID = c.GS.ID
+			if msgSend.Reference.ChannelID == 0 {
+				msgSend.Reference.ChannelID = cid
+			}
 			if msgSend.Reference.Type == discordgo.MessageReferenceTypeForward {
 				if originChannel := c.ChannelArgNoDM(msgSend.Reference.ChannelID); originChannel != 0 {
 					hasPerms, _ := bot.BotHasPermissionGS(c.GS, originChannel, discordgo.PermissionViewChannel|discordgo.PermissionReadMessageHistory)
@@ -403,12 +407,15 @@ func (c *Context) tmplSendMessage(filterSpecialMentions bool, returnID bool) fun
 		}
 
 		m, err = common.BotSession.ChannelMessageSendComplex(cid, msgSend)
-
-		if err == nil && returnID {
-			return m.ID
+		if err != nil {
+			return "", err
 		}
 
-		return ""
+		if returnID {
+			return m.ID, nil
+		}
+
+		return "", nil
 	}
 }
 
@@ -592,7 +599,7 @@ func (c *Context) tmplEditComponentsMessage(filterSpecialMentions bool) func(cha
 
 func (c *Context) tmplPinMessage(unpin bool) func(channel, msgID interface{}) (string, error) {
 	return func(channel, msgID interface{}) (string, error) {
-		if c.IncreaseCheckCallCounter("message_pins", 5) {
+		if c.IncreaseCheckCallCounter("message_pins", 2) {
 			return "", ErrTooManyCalls
 		}
 
@@ -1047,6 +1054,44 @@ func (c *Context) tmplGetMember(target interface{}) (*discordgo.Member, error) {
 	return member.DgoMember(), nil
 }
 
+// memberAbove returns whether member a is higher than member b in the guild hierarchy.
+func (c *Context) tmplMemberAbove(a, b *discordgo.Member) (bool, error) {
+	if c.IncreaseCheckGenericAPICall() {
+		return false, ErrTooManyAPICalls
+	}
+
+	if a == nil {
+		return false, nil
+	}
+
+	if b == nil {
+		return true, nil
+	}
+
+	aState := dstate.MemberStateFromMember(a)
+	bState := dstate.MemberStateFromMember(b)
+
+	return bot.IsMemberAbove(c.GS, aState, bState), nil
+}
+
+func (c *Context) tmplMemberAboveRole(a *discordgo.Member, role *discordgo.Role) (bool, error) {
+	if c.IncreaseCheckGenericAPICall() {
+		return false, ErrTooManyAPICalls
+	}
+
+	if a == nil {
+		return false, nil
+	}
+
+	if role == nil {
+		return false, nil
+	}
+
+	aState := dstate.MemberStateFromMember(a)
+
+	return bot.IsMemberAboveRole(c.GS, aState, role), nil
+}
+
 func (c *Context) tmplGetMemberVoiceState(target interface{}) (*discordgo.VoiceState, error) {
 	if c.IncreaseCheckGenericAPICall() {
 		return nil, ErrTooManyAPICalls
@@ -1266,7 +1311,7 @@ func (c *Context) tmplCreateThread(channel, msgID, name interface{}, optionals .
 	}
 
 	if err != nil {
-		return nil, nil // dont send an error, a nil output would indicate invalid/unknown channel
+		return nil, err
 	}
 
 	tstate := dstate.ChannelStateFromDgo(ctxThread)
@@ -1493,7 +1538,7 @@ func (c *Context) tmplCreateForumPost(channel, name, content interface{}, option
 
 	thread, err := common.BotSession.ForumThreadStartComplex(cID, start, msgData)
 	if err != nil {
-		return nil, errors.New("unable to create forum post")
+		return nil, err
 	}
 
 	tstate := dstate.ChannelStateFromDgo(thread)
@@ -1697,7 +1742,7 @@ func (c *Context) tmplGetChannelOrThread(channel interface{}) (*CtxChannel, erro
 
 func (c *Context) tmplGetChannelPins(pinCount bool) func(channel interface{}) (interface{}, error) {
 	return func(channel interface{}) (interface{}, error) {
-		if c.IncreaseCheckCallCounterPremium("channel_pins", 2, 4) {
+		if c.IncreaseCheckCallCounterPremium("channel_pins", 1, 2) {
 			return 0, ErrTooManyCalls
 		}
 
@@ -1706,21 +1751,28 @@ func (c *Context) tmplGetChannelPins(pinCount bool) func(channel interface{}) (i
 			return 0, errors.New("unknown channel")
 		}
 
-		msg, err := common.BotSession.ChannelMessagesPinned(cID)
-		if err != nil {
-			return 0, err
+		hasMore := true
+		var before *time.Time
+		msgs := make([]discordgo.Message, 0)
+		for hasMore {
+			pinned, err := common.BotSession.ChannelMessagesPinned(cID, 50, before)
+			if err != nil {
+				return 0, err
+			}
+			hasMore = pinned.HasMore
+			if hasMore && len(pinned.Items) > 0 {
+				before = &pinned.Items[len(pinned.Items)-1].PinnedAt
+			}
+			for _, item := range pinned.Items {
+				msgs = append(msgs, *item.Message)
+			}
 		}
 
 		if pinCount {
-			return len(msg), nil
+			return len(msgs), nil
 		}
 
-		pinnedMessages := make([]discordgo.Message, 0, len(msg))
-		for _, m := range msg {
-			pinnedMessages = append(pinnedMessages, *m)
-		}
-
-		return pinnedMessages, nil
+		return msgs, nil
 	}
 }
 
@@ -1947,7 +1999,13 @@ func (c *Context) tmplEditChannelName(channel interface{}, newName string) (stri
 		return "", errors.New("unknown channel")
 	}
 
-	if c.IncreaseCheckCallCounter("edit_channel_"+strconv.FormatInt(cID, 10), 2) {
+	key := "edit_channel_name" + strconv.FormatInt(cID, 10)
+
+	if c.SetCooldown(key, 10*time.Minute) {
+		return "", ErrFuncOnCooldown
+	}
+
+	if c.IncreaseCheckCallCounter(key, 1) {
 		return "", ErrTooManyCalls
 	}
 
@@ -1965,7 +2023,13 @@ func (c *Context) tmplEditChannelTopic(channel interface{}, newTopic string) (st
 		return "", errors.New("unknown channel")
 	}
 
-	if c.IncreaseCheckCallCounter("edit_channel_"+strconv.FormatInt(cID, 10), 2) {
+	key := "edit_channel_topic" + strconv.FormatInt(cID, 10)
+
+	if c.SetCooldown(key, 10*time.Minute) {
+		return "", ErrFuncOnCooldown
+	}
+
+	if c.IncreaseCheckCallCounter(key, 1) {
 		return "", ErrTooManyCalls
 	}
 

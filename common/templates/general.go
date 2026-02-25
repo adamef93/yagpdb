@@ -381,7 +381,7 @@ func CreateMessageSend(values ...interface{}) (*discordgo.MessageSend, error) {
 			v, _ := indirect(reflect.ValueOf(val))
 			if v.Kind() == reflect.Slice {
 				buttons := []*discordgo.Button{}
-				const maxButtons = 25 // Discord limitation
+				const maxButtons = 40 // Discord limitation
 				for i := 0; i < v.Len() && i < maxButtons; i++ {
 					button, err := CreateButton(v.Index(i).Interface())
 					if err != nil {
@@ -535,6 +535,7 @@ func CreateMessageEdit(values ...interface{}) (*discordgo.MessageEdit, error) {
 			v, _ := indirect(reflect.ValueOf(val))
 			if v.Kind() == reflect.Slice {
 				const maxEmbeds = 10 // Discord limitation
+				msg.Embeds = make([]*discordgo.MessageEmbed, 0, maxEmbeds)
 				for i := 0; i < v.Len() && i < maxEmbeds; i++ {
 					embed, err := CreateEmbed(v.Index(i).Interface())
 					if err != nil {
@@ -767,39 +768,39 @@ func in(l interface{}, v interface{}) bool {
 	lv, _ := indirect(reflect.ValueOf(l))
 	vv := reflect.ValueOf(v)
 
-	if !reflect.ValueOf(vv).IsZero() {
-		switch lv.Kind() {
-		case reflect.Array, reflect.Slice:
-			for i := 0; i < lv.Len(); i++ {
-				lvv := lv.Index(i)
-				lvv, isNil := indirect(lvv)
-				if isNil {
-					continue
-				}
-				switch lvv.Kind() {
-				case reflect.String:
-					if vv.Type() == lvv.Type() && vv.String() == lvv.String() {
-						return true
-					}
-				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-					switch vv.Kind() {
-					case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-						if vv.Int() == lvv.Int() {
-							return true
-						}
-					}
-				case reflect.Float32, reflect.Float64:
-					switch vv.Kind() {
-					case reflect.Float32, reflect.Float64:
-						if vv.Float() == lvv.Float() {
-							return true
-						}
-					}
-				}
+	if reflect.ValueOf(vv).IsZero() {
+		return false
+	}
+
+	switch lv.Kind() {
+	case reflect.String:
+		if vv.Type() == lv.Type() && strings.Contains(lv.String(), vv.String()) {
+			return true
+		}
+	case reflect.Array, reflect.Slice:
+		for i := range lv.Len() {
+			lvv := lv.Index(i)
+			lvv, isNil := indirect(lvv)
+			if isNil {
+				continue
 			}
-		case reflect.String:
-			if vv.Type() == lv.Type() && strings.Contains(lv.String(), vv.String()) {
-				return true
+			switch {
+			case lvv.Kind() == reflect.String:
+				if vv.Type() == lvv.Type() && vv.String() == lvv.String() {
+					return true
+				}
+			case lvv.CanInt() && vv.CanInt():
+				if vv.Int() == lvv.Int() {
+					return true
+				}
+			case lvv.CanUint() && vv.CanUint():
+				if vv.Uint() == lvv.Uint() {
+					return true
+				}
+			case lvv.CanFloat() && vv.CanFloat():
+				if vv.Float() == lvv.Float() {
+					return true
+				}
 			}
 		}
 	}
@@ -1335,7 +1336,7 @@ func sequence(start, stop int) ([]int, error) {
 	}
 
 	if stop-start > MaxSliceLength {
-		return nil, fmt.Errorf("Sequence max length is %d", MaxSliceLength)
+		return nil, fmt.Errorf("sequence max length is %d", MaxSliceLength)
 	}
 
 	out := make([]int, stop-start)
@@ -1376,7 +1377,11 @@ func shuffle(seq interface{}) (interface{}, error) {
 	return shuffled.Interface(), nil
 }
 
-func tmplToInt(from interface{}) int {
+func tmplToInt(from any, base ...int) int {
+	b := 10
+	if len(base) > 0 {
+		b = base[0]
+	}
 	t := reflect.ValueOf(from)
 	switch {
 	case t.CanInt():
@@ -1386,14 +1391,18 @@ func tmplToInt(from interface{}) int {
 	case t.CanUint():
 		return int(t.Uint())
 	case t.Kind() == reflect.String:
-		parsed, _ := strconv.ParseInt(t.String(), 10, 64)
+		parsed, _ := strconv.ParseInt(t.String(), b, 64)
 		return int(parsed)
 	default:
 		return 0
 	}
 }
 
-func ToInt64(from interface{}) int64 {
+func ToInt64(from any, base ...int) int64 {
+	b := 10
+	if len(base) > 0 {
+		b = base[0]
+	}
 	t := reflect.ValueOf(from)
 	switch {
 	case t.CanInt():
@@ -1403,7 +1412,7 @@ func ToInt64(from interface{}) int64 {
 	case t.CanUint():
 		return int64(t.Uint())
 	case t.Kind() == reflect.String:
-		parsed, _ := strconv.ParseInt(t.String(), 10, 64)
+		parsed, _ := strconv.ParseInt(t.String(), b, 64)
 		return parsed
 	default:
 		return 0

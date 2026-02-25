@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
+	"slices"
 	"time"
 
 	"emperror.dev/errors"
@@ -197,8 +199,15 @@ func tmplRunCC(ctx *templates.Context) interface{} {
 			return "", errors.New("custom command is disabled")
 		}
 
-		if cmd.TriggerType == int(CommandTriggerInterval) || cmd.TriggerType == int(CommandTriggerCron) {
-			return "", errors.New("interval and cron type custom commands cannot be used with execCC")
+		disallowedTriggerTypes := []CommandTriggerType{
+			CommandTriggerInterval,
+			CommandTriggerCron,
+			CommandTriggerRole,
+		}
+
+		triggerType := CommandTriggerType(cmd.TriggerType)
+		if slices.Contains(disallowedTriggerTypes, triggerType) {
+			return "", fmt.Errorf("custom commands of type %s cannot be used with execCC", triggerStrings[triggerType])
 		}
 
 		channelID := ctx.ChannelArg(channel)
@@ -296,8 +305,15 @@ func tmplScheduleUniqueCC(ctx *templates.Context) interface{} {
 			return "", errors.New("custom command is disabled")
 		}
 
-		if cmd.TriggerType == int(CommandTriggerInterval) || cmd.TriggerType == int(CommandTriggerCron) {
-			return "", errors.New("interval and cron type custom commands cannot be used with scheduleUniqueCC")
+		disallowedTriggerTypes := []CommandTriggerType{
+			CommandTriggerInterval,
+			CommandTriggerCron,
+			CommandTriggerRole,
+		}
+
+		triggerType := CommandTriggerType(cmd.TriggerType)
+		if slices.Contains(disallowedTriggerTypes, triggerType) {
+			return "", fmt.Errorf("custom commands of type %s cannot be used with scheduleUniqueCC", triggerStrings[triggerType])
 		}
 
 		channelID := ctx.ChannelArg(channel)
@@ -867,7 +883,17 @@ type LightDBEntry struct {
 func ToLightDBEntry(m *models.TemplatesUserDatabase) (*LightDBEntry, error) {
 	var dst interface{}
 	dec := newDecoder(bytes.NewBuffer(m.ValueRaw))
-	err := dec.Decode(&dst)
+
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				err = errors.New(fmt.Sprint("panic decoding db entry: ", r))
+			}
+		}()
+		err = dec.Decode(&dst)
+	}()
+
 	if err != nil {
 		return nil, err
 	}
@@ -910,7 +936,7 @@ func newDecoder(buf *bytes.Buffer) *msgpack.Decoder {
 		mi := make(map[interface{}]interface{}, n)
 		ms := make(map[string]interface{})
 
-		for i := 0; i < n; i++ {
+		for range n {
 			mk, err := d.DecodeInterface()
 			if err != nil {
 				return nil, err
@@ -938,6 +964,7 @@ func newDecoder(buf *bytes.Buffer) *msgpack.Decoder {
 				mi[mk] = mv
 			}
 		}
+
 		if isStringKeysOnly {
 			return ms, nil
 		}
