@@ -9,6 +9,7 @@ import (
 	"math"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,28 +29,63 @@ var (
 	ErrRegexCacheLimit = errors.New("too many unique regular expressions (regex)")
 )
 
-func (c *Context) tmplSendDM(s ...interface{}) string {
-	if len(s) < 1 || c.IncreaseCheckCallCounter("send_dm", 1) || c.IncreaseCheckGenericAPICall() || c.MS == nil || c.ExecutedFrom == ExecutedFromLeave {
-		return ""
-	}
-
+func (c *Context) parseMessageInput(msg interface{}) (*discordgo.MessageSend, error) {
 	msgSend := &discordgo.MessageSend{
 		AllowedMentions: discordgo.AllowedMentions{
 			Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers},
 		},
 	}
+	var err error
 
-	switch t := s[0].(type) {
+	switch typedMsg := msg.(type) {
 	case *discordgo.MessageEmbed:
-		msgSend.Embeds = []*discordgo.MessageEmbed{t}
+		msgSend.Embeds = []*discordgo.MessageEmbed{typedMsg}
 	case []*discordgo.MessageEmbed:
-		msgSend.Embeds = t
+		msgSend.Embeds = typedMsg
 	case *discordgo.MessageSend:
-		msgSend = t
-		if (len(msgSend.Embeds) == 0 && strings.TrimSpace(msgSend.Content) == "") && (msgSend.File == nil) && (len(msgSend.Components) == 0) {
-			return ""
+		msgSend = typedMsg
+	case *discordgo.MessageEdit:
+		msgSend = typedMsg.ToMessageSend()
+	case *discordgo.InteractionResponseData:
+		msgSend = typedMsg.ToMessageSend()
+	case *ComponentBuilder:
+		msgSend, err = typedMsg.ToComplexMessage()
+		if err != nil {
+			return nil, err
 		}
 	default:
+		msgSend.Content = ToString(msg)
+	}
+
+	if msgSend.Flags&discordgo.MessageFlagsIsComponentsV2 == 0 && len(msgSend.Embeds) > 0 {
+		// only keep valid embeds
+		var embeds []*discordgo.MessageEmbed
+		for _, e := range msgSend.Embeds {
+			if e != nil && !e.GetMarshalNil() {
+				embeds = append(embeds, e)
+			}
+		}
+		msgSend.Embeds = embeds
+	}
+
+	return msgSend, nil
+}
+
+func (c *Context) tmplSendDM(s ...interface{}) string {
+	if len(s) < 1 || c.IncreaseCheckCallCounter("send_dm", 1) || c.IncreaseCheckGenericAPICall() || c.MS == nil || c.ExecutedFrom == ExecutedFromLeave {
+		return ""
+	}
+
+	msgSend, err := c.parseMessageInput(s[0])
+	if err != nil {
+		return ""
+	}
+
+	if (len(msgSend.Embeds) == 0 && strings.TrimSpace(msgSend.Content) == "") && (msgSend.File == nil) && (len(msgSend.Components) == 0) {
+		return ""
+	}
+
+	if msgSend.Content != "" && reflect.TypeOf(s[0]).Kind() != reflect.Ptr && reflect.TypeOf(s[0]).Kind() != reflect.Struct {
 		msgSend.Content = common.ReplaceServerInvites(fmt.Sprint(s...), 0, "[removed-server-invite]")
 	}
 	serverInfo := bot.GenerateServerInfoButton(c.GS.ID)
@@ -165,7 +201,7 @@ func (c *Context) sendNestedTemplate(channel interface{}, dm bool, name string, 
 	if name == "" {
 		return "", errors.New("no template name passed")
 	}
-	if c.CurrentFrame.isNestedTemplate {
+	if c.CurrentFrame.IsNestedTemplate {
 		return "", errors.New("can't call this in a nested template")
 	}
 
@@ -346,30 +382,13 @@ func (c *Context) tmplSendMessage(filterSpecialMentions bool, returnID bool) fun
 		}
 
 		var m *discordgo.Message
-		msgSend := &discordgo.MessageSend{
-			AllowedMentions: discordgo.AllowedMentions{
-				Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers},
-			},
+		msgSend, err := c.parseMessageInput(msg)
+		if err != nil {
+			return "", err
 		}
-		var err error
 
-		switch typedMsg := msg.(type) {
-		case *discordgo.MessageEmbed:
-			msgSend.Embeds = []*discordgo.MessageEmbed{typedMsg}
-		case []*discordgo.MessageEmbed:
-			msgSend.Embeds = typedMsg
-		case *discordgo.MessageSend:
-			msgSend = typedMsg
-			if msgSend.Reference != nil && msgSend.Reference.ChannelID == 0 {
-				msgSend.Reference.ChannelID = cid
-			}
-		case *ComponentBuilder:
-			msgSend, err = typedMsg.ToComplexMessage()
-			if err != nil {
-				return "", err
-			}
-		default:
-			msgSend.Content = ToString(msg)
+		if msgSend.Reference != nil && msgSend.Reference.ChannelID == 0 {
+			msgSend.Reference.ChannelID = cid
 		}
 
 		if sendType == sendMessageDM {
@@ -431,57 +450,13 @@ func (c *Context) tmplEditMessage(filterSpecialMentions bool) func(channel inter
 		}
 
 		mID := ToInt64(msgID)
-		msgEdit := &discordgo.MessageEdit{
-			ID:      mID,
-			Channel: cid,
-			AllowedMentions: discordgo.AllowedMentions{
-				Parse: []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers},
-			},
+		msgSend, err := c.parseMessageInput(msg)
+		if err != nil {
+			return "", err
 		}
-		var err error
-
-		switch typedMsg := msg.(type) {
-
-		case *discordgo.MessageEmbed:
-			msgEdit.Embeds = []*discordgo.MessageEmbed{typedMsg}
-		case []*discordgo.MessageEmbed:
-			msgEdit.Embeds = typedMsg
-		case *discordgo.MessageEdit:
-			embeds := make([]*discordgo.MessageEmbed, 0, len(typedMsg.Embeds))
-			msgEdit.AllowedMentions = typedMsg.AllowedMentions
-			msgEdit.Components = typedMsg.Components
-			msgEdit.Flags = typedMsg.Flags
-			msgEdit.Content = typedMsg.Content
-			msgEdit.Embeds = typedMsg.Embeds
-			// If there are no Embeds or if the message is not of type component V2  and string are explicitly set as null, give an error message.
-			if typedMsg.Flags&discordgo.MessageFlagsIsComponentsV2 == 0 && typedMsg.Content != nil && strings.TrimSpace(*typedMsg.Content) == "" {
-				if len(typedMsg.Embeds) == 0 {
-					return "", errors.New("both content and embed cannot be null")
-				}
-
-				// only keep valid embeds
-				for _, e := range typedMsg.Embeds {
-					if e != nil && !e.GetMarshalNil() {
-						embeds = append(typedMsg.Embeds, e)
-					}
-				}
-				if len(embeds) == 0 {
-					return "", errors.New("both content and embed cannot be null")
-				}
-			}
-
-		case *ComponentBuilder:
-			msgEdit, err = typedMsg.ToComplexMessageEdit()
-			if err != nil {
-				return "", err
-			}
-			msgEdit.ID = mID
-			msgEdit.Channel = cid
-
-		default:
-			temp := fmt.Sprint(msg)
-			msgEdit.Content = &temp
-		}
+		msgEdit := msgSend.ToMessageEdit()
+		msgEdit.ID = mID
+		msgEdit.Channel = cid
 
 		var repliedUser bool
 		parseMentions := []discordgo.AllowedMentionType{discordgo.AllowedMentionTypeUsers}
@@ -798,22 +773,18 @@ func (c *Context) tmplHasPermissions(needed int64) (bool, error) {
 		return false, ErrTooManyAPICalls
 	}
 
-	if c.MS == nil {
-		return false, nil
-	}
-
-	if needed < 0 {
-		return false, nil
-	}
-
-	if needed == 0 {
-		return true, nil
-	}
-
-	return c.hasPerms(c.MS, c.CurrentFrame.CS.ID, needed)
+	return c.hasPerms(c.MS, c.CurrentFrame.CS.ID, needed, false)
 }
 
-func (c *Context) tmplTargetHasPermissions(target interface{}, needed int64) (bool, error) {
+func (c *Context) tmplHasAnyPermissions(needed int64) (bool, error) {
+	if c.IncreaseCheckGenericAPICall() {
+		return false, ErrTooManyAPICalls
+	}
+
+	return c.hasPerms(c.MS, c.CurrentFrame.CS.ID, needed, true)
+}
+
+func (c *Context) tmplTargetHasPermissions(target any, needed int64) (bool, error) {
 	if c.IncreaseCheckGenericAPICall() {
 		return false, ErrTooManyAPICalls
 	}
@@ -823,6 +794,37 @@ func (c *Context) tmplTargetHasPermissions(target interface{}, needed int64) (bo
 		return false, nil
 	}
 
+	ms, err := bot.GetMember(c.GS.ID, targetID)
+	if err != nil {
+		return false, err
+	}
+
+	return c.hasPerms(ms, c.CurrentFrame.CS.ID, needed, false)
+}
+
+func (c *Context) tmplTargetHasAnyPermissions(target any, needed int64) (bool, error) {
+	if c.IncreaseCheckGenericAPICall() {
+		return false, ErrTooManyAPICalls
+	}
+
+	targetID := TargetUserID(target)
+	if targetID == 0 {
+		return false, nil
+	}
+
+	ms, err := bot.GetMember(c.GS.ID, targetID)
+	if err != nil {
+		return false, err
+	}
+
+	return c.hasPerms(ms, c.CurrentFrame.CS.ID, needed, true)
+}
+
+func (c *Context) hasPerms(ms *dstate.MemberState, channelID int64, needed int64, requireAny bool) (bool, error) {
+	if ms == nil {
+		return false, nil
+	}
+
 	if needed < 0 {
 		return false, nil
 	}
@@ -831,12 +833,20 @@ func (c *Context) tmplTargetHasPermissions(target interface{}, needed int64) (bo
 		return true, nil
 	}
 
-	ms, err := bot.GetMember(c.GS.ID, targetID)
+	perms, err := c.GS.GetMemberPermissions(channelID, ms.User.ID, ms.Member.Roles)
 	if err != nil {
 		return false, err
 	}
 
-	return c.hasPerms(ms, c.CurrentFrame.CS.ID, needed)
+	if perms&discordgo.PermissionAdministrator != 0 {
+		return true, nil
+	}
+
+	if requireAny {
+		return perms&needed != 0, nil
+	}
+
+	return perms&needed == needed, nil
 }
 
 func (c *Context) tmplGetTargetPermissionsIn(target interface{}, channel interface{}) (int64, error) {
@@ -860,23 +870,6 @@ func (c *Context) tmplGetTargetPermissionsIn(target interface{}, channel interfa
 	}
 
 	return c.GS.GetMemberPermissions(channelID, ms.User.ID, ms.Member.Roles)
-}
-
-func (c *Context) hasPerms(ms *dstate.MemberState, channelID int64, needed int64) (bool, error) {
-	perms, err := c.GS.GetMemberPermissions(channelID, ms.User.ID, ms.Member.Roles)
-	if err != nil {
-		return false, err
-	}
-
-	if perms&needed == needed {
-		return true, nil
-	}
-
-	if perms&discordgo.PermissionAdministrator != 0 {
-		return true, nil
-	}
-
-	return false, nil
 }
 
 func (c *Context) tmplDelResponse(args ...interface{}) string {
@@ -1527,9 +1520,9 @@ func (c *Context) tmplCreateForumPost(channel, name, content interface{}, option
 		if len(v) == 0 {
 			return nil, errors.New("post content must be non-zero length")
 		}
-		msgData, _ = CreateMessageSend("content", v)
+		msgData, _ = CreateComplexMessage("content", v)
 	case *discordgo.MessageEmbed:
-		msgData, _ = CreateMessageSend("embed", v)
+		msgData, _ = CreateComplexMessage("embed", v)
 	case *discordgo.MessageSend:
 		msgData = v
 	default:
@@ -2381,7 +2374,7 @@ func (c *Context) mentionRole(roleInput interface{}, accept roleInputType) strin
 		return ""
 	}
 
-	if common.ContainsInt64Slice(c.CurrentFrame.MentionRoles, role.ID) {
+	if slices.Contains(c.CurrentFrame.MentionRoles, role.ID) {
 		return role.Mention()
 	}
 
@@ -2415,7 +2408,7 @@ func (c *Context) hasRole(roleInput interface{}, accept roleInputType) bool {
 		return false
 	}
 
-	return common.ContainsInt64Slice(c.MS.Member.Roles, role.ID)
+	return slices.Contains(c.MS.Member.Roles, role.ID)
 }
 
 func (c *Context) tmplHasRole(roleInput interface{}) bool {
@@ -2454,7 +2447,7 @@ func (c *Context) targetHasRole(target interface{}, roleInput interface{}, accep
 		return false, fmt.Errorf("role %v not found", roleInput)
 	}
 
-	return common.ContainsInt64Slice(ms.Member.Roles, role.ID), nil
+	return slices.Contains(ms.Member.Roles, role.ID), nil
 }
 
 func (c *Context) tmplTargetHasRole(target interface{}, roleInput interface{}) (bool, error) {
@@ -2498,7 +2491,7 @@ func (c *Context) giveRole(target interface{}, roleInput interface{}, accept rol
 		ms, err := bot.GetMember(c.GS.ID, targetID)
 		var hasRole bool
 		if ms != nil && err == nil {
-			hasRole = common.ContainsInt64Slice(ms.Member.Roles, role.ID)
+			hasRole = slices.Contains(ms.Member.Roles, role.ID)
 		}
 
 		if hasRole {
@@ -2602,7 +2595,7 @@ func (c *Context) takeRole(target interface{}, roleInput interface{}, accept rol
 		ms, err := bot.GetMember(c.GS.ID, targetID)
 		hasRole := true
 		if ms != nil && err == nil {
-			hasRole = common.ContainsInt64Slice(ms.Member.Roles, role.ID)
+			hasRole = slices.Contains(ms.Member.Roles, role.ID)
 		}
 
 		if !hasRole {

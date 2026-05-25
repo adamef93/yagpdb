@@ -1,6 +1,7 @@
 package mqueue
 
 import (
+	"slices"
 	"time"
 
 	"emperror.dev/errors"
@@ -81,7 +82,7 @@ var disableOnError = []int{
 
 func maybeDisableFeed(source PluginWithSourceDisabler, elem *QueuedElement, err *discordgo.RESTError) {
 	l := logger.WithError(err).WithField("source", elem.Source).WithField("sourceid", elem.SourceItemID).WithField("guild_id", elem.GuildID)
-	if err.Message == nil || !common.ContainsIntSlice(disableOnError, err.Message.Code) {
+	if err.Message == nil || !slices.Contains(disableOnError, err.Message.Code) {
 		l.Error("error sending mqueue message")
 		return
 	}
@@ -163,10 +164,16 @@ func trySendWebhook(l *logrus.Entry, elem *QueuedElement) (err error) {
 			AvatarURL:       avatar,
 			Embeds:          elem.MessageSend.Embeds,
 			Components:      elem.MessageSend.Components,
-			Flags:           int64(elem.MessageSend.Flags),
+			Flags:           elem.MessageSend.Flags,
 			AllowedMentions: &elem.MessageSend.AllowedMentions,
 		}
 		_, err = webhookSession.WebhookExecuteComplex(wh.ID, wh.Token, true, params)
+		if code, _ := common.DiscordError(err); code == discordgo.ErrCodeUnknownWebhook {
+			webhookCache.Delete(elem.ChannelID)
+			if delErr := deleteWebhookRow(elem.ChannelID, elem.Source); delErr != nil {
+				l.WithError(delErr).Error("failed deleting stale mqueue_webhooks row")
+			}
+		}
 		if err != nil {
 			logrus.WithError(err).Error("Failed sending mqueue v2 message via webhook (WebhookExecuteComplex)")
 			return err
@@ -196,8 +203,11 @@ func trySendWebhook(l *logrus.Entry, elem *QueuedElement) (err error) {
 
 	err = webhookSession.WebhookExecute(wh.ID, wh.Token, true, webhookParams)
 	if code, _ := common.DiscordError(err); code == discordgo.ErrCodeUnknownWebhook {
-		// webhook got deleted, try again
+		// webhook got deleted, drop our stale records and try again with a fresh one
 		webhookCache.Delete(elem.ChannelID)
+		if delErr := deleteWebhookRow(elem.ChannelID, elem.Source); delErr != nil {
+			l.WithError(delErr).Error("failed deleting stale mqueue_webhooks row")
+		}
 		wh, _, err = getWebhook()
 		if err != nil {
 			return err

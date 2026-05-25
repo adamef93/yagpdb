@@ -788,15 +788,21 @@ func (s Container) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON is a helper function to unmarshal Container.
 func (c *Container) UnmarshalJSON(data []byte) error {
+	type container Container
 	var v struct {
+		container
 		RawComponents []unmarshalableMessageComponent `json:"components"`
 	}
+
 	err := json.Unmarshal(data, &v)
 	if err != nil {
 		return err
 	}
+
 	var ok bool
+	*c = Container(v.container)
 	c.Components = make([]TopLevelComponent, len(v.RawComponents))
+
 	for i, v := range v.RawComponents {
 		comp := v.MessageComponent
 		c.Components[i], ok = comp.(TopLevelComponent)
@@ -833,13 +839,17 @@ type RadioGroup struct {
 	ID       int                `json:"id,omitempty"`
 	CustomID string             `json:"custom_id"`
 	Options  []RadioGroupOption `json:"options"`
-	Required bool               `json:"required,omitempty"`
+	Required *bool              `json:"required,omitempty"`
 	Value    string             `json:"value,omitempty"`
 }
 
 // MarshalJSON is a method for marshaling RadioGroupActionComponent to a JSON object.
 func (t RadioGroup) MarshalJSON() ([]byte, error) {
 	type radioGroup RadioGroup
+	var truth = true
+	if t.Required == nil {
+		t.Required = &truth
+	}
 
 	return json.Marshal(struct {
 		radioGroup
@@ -869,13 +879,18 @@ type CheckboxGroup struct {
 	Options   []CheckboxGroupOption `json:"options"`
 	MinValues int                   `json:"min_values,omitempty"`
 	MaxValues int                   `json:"max_values,omitempty"`
-	Required  bool                  `json:"required,omitempty"`
+	Required  *bool                 `json:"required,omitempty"`
 	Values    []string              `json:"values,omitempty"`
 }
 
 // MarshalJSON is a method for marshaling RadioGroupActionComponent to a JSON object.
 func (t CheckboxGroup) MarshalJSON() ([]byte, error) {
 	type checkboxGroup CheckboxGroup
+
+	var truth = true
+	if t.Required == nil {
+		t.Required = &truth
+	}
 
 	return json.Marshal(struct {
 		checkboxGroup
